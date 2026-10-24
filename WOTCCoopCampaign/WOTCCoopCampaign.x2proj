@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="12.0" DefaultTargets="Default" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Guid>7d3f0c1e-5a2b-4c8e-9f61-2b7a3c4d5e6f</Guid>
+    <Name>WOTC Co-op Campaign</Name>
+    <Description>Two-player shared co-op campaign for XCOM 2: War of the Chosen.</Description>
+    <SteamPublishID>0</SteamPublishID>
+    <AssemblyName>WOTCCoopCampaign</AssemblyName>
+    <RootNamespace>WOTCCoopCampaign</RootNamespace>
+  </PropertyGroup>
+  <PropertyGroup>
+    <SolutionRoot>$(MSBuildProjectDirectory)\..\</SolutionRoot>
+    <ScriptsDir>$(SolutionRoot).scripts\</ScriptsDir>
+    <BuildCommonRoot>$(ScriptsDir)X2ModBuildCommon\</BuildCommonRoot>
+  </PropertyGroup>
+  <Import Project="$(BuildCommonRoot)XCOM2.targets" />
+</Project>
