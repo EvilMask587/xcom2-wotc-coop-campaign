@@ -1,0 +1,13 @@
+[CoopEditGate]
+m_strWaitTitle="Partner has control"
+m_strWaitText="Waiting for your partner to hand over control of the campaign..."
+m_strCancel="Cancel"
+
+[CoopBatonPanel]
+m_strYou="Control: you"
+m_strYouAsked="Partner asks for control - close the screen to hand it over"
+m_strPartner="Control: partner"
+m_strArriving="Control is being handed to you..."
+m_strPartnerBusy="Partner is busy - control comes once they leave their screen"
+m_strAsk="Ask for control"
+m_strAsked="Asked..."
