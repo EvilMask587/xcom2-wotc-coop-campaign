@@ -24,6 +24,10 @@ var name WaitKind;
 var int WaitArg;
 var float WaitLeft;
 
+// @netwatch: queue logging
+var float NetWatchLeft;
+var string LastNetWatch;
+
 static function CoopHarness EnsureSpawned(Actor Spawner)
 {
 	local CoopHarness Harness;
@@ -227,6 +231,57 @@ function RunHarnessCommand(string Cmd)
 	{
 		LogScreens();
 	}
+	else if (Cmd ~= "time")
+	{
+		LogTime();
+	}
+	else if (Left(Cmd, 9) ~= "research ")
+	{
+		StartResearch(name(Mid(Cmd, 9)));
+	}
+	else if (Cmd ~= "geoscape")
+	{
+		`HQPRES.UIEnterStrategyMap();
+	}
+	else if (Cmd ~= "scan")
+	{
+		`GAME.GetGeoscape().FastForward();
+	}
+	else if (Cmd ~= "pause")
+	{
+		`GAME.GetGeoscape().Pause();
+	}
+	else if (Left(Cmd, 9) ~= "netwatch ")
+	{
+		NetWatchLeft = float(Mid(Cmd, 9));
+		SetTimer(0.05f, true, nameof(NetWatch));
+	}
+	else if (Left(Cmd, 14) ~= "pendingstress ")
+	{
+		PendingStress(int(Mid(Cmd, 14)));
+	}
+	else if (Cmd ~= "autosave")
+	{
+		// what the camera does when going from the Geoscape back to the Avenger (BaseRoomView)
+		`AUTOSAVEMGR.DoAutosave();
+	}
+	else if (Left(Cmd, 9) ~= "walkback ")
+	{
+		WalkBack(int(Mid(Cmd, 9)));
+	}
+	else if (Cmd ~= "pausemenu")
+	{
+		`HQPRES.UIPauseMenu();
+	}
+	else if (Cmd ~= "savescreen")
+	{
+		// what the pause menu's Save item does
+		`HQPRES.UISaveScreen();
+	}
+	else if (Left(Cmd, 6) ~= "burst ")
+	{
+		Burst(int(Mid(Cmd, 6)));
+	}
 	else if (Cmd ~= "emptyframe")
 	{
 		// a frame without objects, like the game's "Entered Facility"; SendMergeGameState refuses those
@@ -410,6 +465,156 @@ function LogPanel()
 	}
 	`log("panel visible=" $ BoolStr(Panel.bIsVisible) @ "label=\"" $ Panel.Label.Text $ "\"" @ "button=" $ BoolStr(Panel.AskButton.bIsVisible)
 		$ (Panel.AskButton.IsDisabled ? ",disabled" : "") @ "\"" $ Panel.AskButton.Text $ "\"",, 'CoopHarness');
+}
+
+// The network manager's send/receive queues: per entry type, state (0 not handled,
+// 1 sent, 2 processed) and serialized size; logged only when it changes.
+function NetWatch()
+{
+	local XComGameStateNetworkManager NetMgr;
+	local string Line;
+	local int i;
+
+	NetMgr = `XCOMNETMANAGER;
+	for (i = 0; i < NetMgr.OutGameData.Length; i++)
+	{
+		Line @= "out" $ i $ "=" $ NetMgr.OutGameData[i].GameDataType $ "/" $ NetMgr.OutGameData[i].PendingState $ "/" $ NetMgr.OutGameData[i].GameStateRaw.Length;
+	}
+	for (i = 0; i < NetMgr.InGameData.Length; i++)
+	{
+		Line @= "in" $ i $ "=" $ NetMgr.InGameData[i].GameDataType $ "/" $ NetMgr.InGameData[i].PendingState $ "/" $ NetMgr.InGameData[i].GameStateRaw.Length;
+	}
+	if (Line != LastNetWatch)
+	{
+		`log("netq" $ (Line == "" ? " empty" : Line),, 'CoopHarness');
+		LastNetWatch = Line;
+	}
+	NetWatchLeft -= 0.05f;
+	if (NetWatchLeft <= 0)
+	{
+		ClearTimer(nameof(NetWatch));
+	}
+}
+
+// Count pending states created and discarded (never submitted), as CoopSession.FlushBatch
+// does for every batch; no network involved.
+function PendingStress(int Count)
+{
+	local XComGameState Pending;
+	local XComGameState_HeadquartersXCom XComHQ;
+	local int i;
+
+	for (i = 0; i < Count; i++)
+	{
+		Pending = class'XComGameStateContext_ChangeContainer'.static.CreateChangeState("Coop test: pending" @ i);
+		XComHQ = XComGameState_HeadquartersXCom(`XCOMHISTORY.GetSingleGameStateObjectForClass(class'XComGameState_HeadquartersXCom'));
+		Pending.ModifyStateObject(class'XComGameState_HeadquartersXCom', XComHQ.ObjectID);
+		`XCOMHISTORY.CleanupPendingGameState(Pending);
+	}
+	`log("pendingstress" @ Count @ "done",, 'CoopHarness');
+}
+
+// Looks up the HQ and every crew member as of each of the last Frames frames, the lookup
+// the Avenger's Geoscape map item makes; it walks back through previous versions, which
+// crashed on a merged version naming a frame past the end of the history.
+function WalkBack(int Frames)
+{
+	local XComGameStateHistory History;
+	local XComGameState_HeadquartersXCom XComHQ;
+	local StateObjectReference Ref;
+	local int Index, Found;
+
+	History = `XCOMHISTORY;
+	XComHQ = XComGameState_HeadquartersXCom(History.GetSingleGameStateObjectForClass(class'XComGameState_HeadquartersXCom'));
+	for (Index = History.GetCurrentHistoryIndex(); Index > History.GetCurrentHistoryIndex() - Frames && Index >= 0; Index--)
+	{
+		if (History.GetGameStateForObjectID(XComHQ.ObjectID,, Index) != none)
+		{
+			Found++;
+		}
+		foreach XComHQ.Crew(Ref)
+		{
+			if (History.GetGameStateForObjectID(Ref.ObjectID,, Index) != none)
+			{
+				Found++;
+			}
+		}
+	}
+	`log("walkback frames=" $ Frames @ "found=" $ Found,, 'CoopHarness');
+}
+
+// Count frames in one tick, each +1 supply, like the bursts the game makes (e.g. three
+// "Geoscape Pause" frames when leaving the Geoscape) that preceded two client crashes.
+function Burst(int Count)
+{
+	local XComGameState NewGameState;
+	local XComGameState_HeadquartersXCom XComHQ;
+	local int i;
+
+	for (i = 0; i < Count; i++)
+	{
+		NewGameState = class'XComGameStateContext_ChangeContainer'.static.CreateChangeState("Coop test: burst" @ i);
+		XComHQ = XComGameState_HeadquartersXCom(`XCOMHISTORY.GetSingleGameStateObjectForClass(class'XComGameState_HeadquartersXCom'));
+		XComHQ = XComGameState_HeadquartersXCom(NewGameState.ModifyStateObject(class'XComGameState_HeadquartersXCom', XComHQ.ObjectID));
+		XComHQ.AddResource(NewGameState, 'Supplies', 1);
+		`XCOMGAME.GameRuleset.SubmitGameState(NewGameState);
+	}
+	`log("burst" @ Count @ "frames submitted",, 'CoopHarness');
+}
+
+static function string DateStr(TDateTime T)
+{
+	return T.m_iYear $ "-" $ T.m_iMonth $ "-" $ T.m_iDay $ "+" $ int(T.m_fTime) $ "s";
+}
+
+// The strategy clock in its three places (history, ruleset, Geoscape) and every research
+// project's completion date. Only the history copy is shared through merge states.
+function LogTime()
+{
+	local XComGameStateHistory History;
+	local XComGameState_GameTime TimeState;
+	local XComGameState_HeadquartersXCom XComHQ;
+	local XComGameState_HeadquartersProjectResearch Project;
+	local string Line;
+	local int i;
+
+	History = `XCOMHISTORY;
+	TimeState = XComGameState_GameTime(History.GetSingleGameStateObjectForClass(class'XComGameState_GameTime', true));
+	XComHQ = XComGameState_HeadquartersXCom(History.GetSingleGameStateObjectForClass(class'XComGameState_HeadquartersXCom', true));
+	Line = "time history=" $ (TimeState != none ? DateStr(TimeState.CurrentTime) : "none");
+	if (XComHeadquartersGame(WorldInfo.Game) != none)
+	{
+		Line @= "rules=" $ DateStr(`STRATEGYRULES.GameTime) @ "geoscape=" $ DateStr(`GAME.GetGeoscape().m_kDateTime)
+			@ "scale=" $ `GAME.GetGeoscape().m_fTimeScale;
+	}
+	for (i = 0; XComHQ != none && i < XComHQ.Projects.Length; i++)
+	{
+		Project = XComGameState_HeadquartersProjectResearch(History.GetGameStateForObjectID(XComHQ.Projects[i].ObjectID));
+		if (Project != none)
+		{
+			Line @= "research#" $ Project.ObjectID $ "=" $ XComGameState_Tech(History.GetGameStateForObjectID(Project.ProjectFocus.ObjectID)).GetMyTemplateName()
+				$ ",done@" $ DateStr(Project.CompletionDateTime) $ ",points=" $ Project.ProjectPointsRemaining;
+		}
+	}
+	`log(Line @ "techs=" $ (XComHQ != none ? XComHQ.TechsResearched.Length : -1),, 'CoopHarness');
+}
+
+function StartResearch(name TechName)
+{
+	local XComGameState_Tech Tech;
+	local XComGameState_HeadquartersXCom XComHQ;
+
+	foreach `XCOMHISTORY.IterateByClassType(class'XComGameState_Tech', Tech)
+	{
+		if (Tech.GetMyTemplateName() == TechName)
+		{
+			XComHQ = XComGameState_HeadquartersXCom(`XCOMHISTORY.GetSingleGameStateObjectForClass(class'XComGameState_HeadquartersXCom'));
+			XComHQ.SetNewResearchProject(Tech.GetReference()); // what UIChooseResearch does on confirm
+			`log("research started" @ TechName @ "tech#" $ Tech.ObjectID,, 'CoopHarness');
+			return;
+		}
+	}
+	`log("research: no tech" @ TechName,, 'CoopHarness');
 }
 
 // The screen stack, top first, with edit screens and the wait dialog marked.

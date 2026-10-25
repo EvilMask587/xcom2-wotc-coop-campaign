@@ -32,6 +32,15 @@ over Steam networking.
   button, partner busy / asking hints. English and Russian texts.
 - **Screen refresh on the receiver:** changed rooms are swapped like a finished
   construction; resource bar and facility grid are rebuilt.
+- **Geoscape clock:** the holder's time travels with its frames; the partner's clock
+  follows and continues forward after a handoff.
+- **Batching:** frames made within 0.2 s go out as one merge state (the network layer lost
+  frames sent one by one in bursts).
+- **History alignment:** before each merge the receiver adds empty frames so the merge
+  lands right after the sender's current frame; without it the host crashed in 5 of 11
+  runs of the new-units test (the Avenger's map icon looked up an older version).
+- **Only the host saves:** on the client autosaves, quicksaves and the pause menu's Save are
+  disabled (`CoopAutosaveMgr`, `CoopSaveGate`); a client that saved while sending crashed.
 
 ## Known issues
 
@@ -42,6 +51,9 @@ over Steam networking.
 - The edit screen list is a first guess (staff slots inside facilities, DLC/mod screens).
 - One unexplained crash of the client (engine package loading, tbbmalloc) while it was
   entering facilities by hand; not reproduced.
+- Merged object versions keep the sender's "previous version" frame number; the receiver
+  pads its history so they stay valid (`CoopSession.AlignHistory`). Whether a host save
+  made after receiving merges loads back the same campaign is not tested yet.
 - Only direct IP tested (the host address is passed as one decimal integer: the engine's
   IpNetDriverSteamworks does not parse a dotted host).
 

@@ -27,7 +27,25 @@ foreach ($t in "A", "B") {
   Remove-Item "$g\XComGame\Config\XComCoopHarness.ini" -ErrorAction SilentlyContinue
   Remove-Item "$g\XComGame\Logs\Launch.log" -ErrorAction SilentlyContinue
 }
-& "$PSScriptRoot\launch_pair.ps1" | Write-Host
+# an instance sometimes hangs at engine start (log stops at ~0.5 s, before any mod code):
+# relaunch both until both harnesses are up, so the steps keep their relative timing
+for ($try = 1; ; $try++) {
+  & "$PSScriptRoot\launch_pair.ps1" | Write-Host
+  $readyBy = (Get-Date).AddSeconds(60)
+  $ready = @{}
+  while ((Get-Date) -lt $readyBy -and $ready.Count -lt 2) {
+    Start-Sleep 2
+    foreach ($t in "A", "B") {
+      $l = "$($insts[$t])\XComGame\Logs\Launch.log"
+      if ((Test-Path $l) -and (Select-String -Path $l -Pattern 'CoopHarness: ready' -Quiet)) { $ready[$t] = $true }
+    }
+  }
+  if ($ready.Count -eq 2 -or $try -ge 3) { break }
+  Write-Host "launch retry $try`: not ready: $(@('A', 'B' | Where-Object { -not $ready[$_] }) -join ',')"
+  Get-Process XCom2 -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$root\*" } | Stop-Process -Force
+  Start-Sleep 2
+  foreach ($t in "A", "B") { Remove-Item "$($insts[$t])\XComGame\Logs\Launch.log" -ErrorAction SilentlyContinue }
+}
 $deadline = (Get-Date).AddSeconds($Timeout)
 $done = @{}
 while ((Get-Date) -lt $deadline -and $done.Count -lt 2) {

@@ -11,3 +11,6 @@ m_strArriving="Control is being handed to you..."
 m_strPartnerBusy="Partner is busy - control comes once they leave their screen"
 m_strAsk="Ask for control"
 m_strAsked="Asked..."
+
+[CoopSaveGate]
+m_strHostSaves="In co-op only the host saves the campaign"
