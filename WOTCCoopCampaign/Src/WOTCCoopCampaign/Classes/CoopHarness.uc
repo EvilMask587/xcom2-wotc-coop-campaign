@@ -111,6 +111,14 @@ function PollWait()
 	{
 		bMet = class'CoopSession'.default.bHasBaton;
 	}
+	else if (WaitKind == 'NoBaton')
+	{
+		bMet = !class'CoopSession'.default.bHasBaton;
+	}
+	else if (WaitKind == 'GrantReq')
+	{
+		bMet = class'CoopSession'.default.bGrantRequested; // the partner asked while our edit screen is open
+	}
 	WaitLeft -= 1.0f;
 	if (bMet || WaitLeft <= 0)
 	{
@@ -190,6 +198,14 @@ function RunHarnessCommand(string Cmd)
 	{
 		StartWait('Baton', 0);
 	}
+	else if (Cmd ~= "waitnobaton")
+	{
+		StartWait('NoBaton', 0);
+	}
+	else if (Cmd ~= "waitgrantreq")
+	{
+		StartWait('GrantReq', 0);
+	}
 	else if (Left(Cmd, 9) ~= "histdump ")
 	{
 		DumpHistory(int(Mid(Cmd, 9)));
@@ -244,7 +260,19 @@ function RunHarnessCommand(string Cmd)
 	}
 	else if (Cmd ~= "geoscape")
 	{
-		`HQPRES.UIEnterStrategyMap();
+		// HQ projects complete only while the Geoscape screen exists (XComHQ checks StrategyMap2D)
+		if (`SCREENSTACK.GetFirstInstanceOf(class'UIStrategyMap') == none)
+		{
+			`HQPRES.UIEnterStrategyMap();
+		}
+		else
+		{
+			`log("geoscape: already open",, 'CoopHarness');
+		}
+	}
+	else if (Cmd ~= "dismiss")
+	{
+		Dismiss();
 	}
 	else if (Cmd ~= "scan")
 	{
@@ -350,6 +378,10 @@ function RunHarnessCommand(string Cmd)
 	else if (Left(Cmd, 10) ~= "buildroom ")
 	{
 		BuildRoom(Mid(Cmd, 10));
+	}
+	else if (Left(Cmd, 10) ~= "construct ")
+	{
+		Construct(Mid(Cmd, 10));
 	}
 	else
 	{
@@ -477,7 +509,7 @@ function LogRooms()
 		// streaming state of the room map: loaded level present, visible, meant to be visible
 		Stream = Level == none ? "nostream" : ("ld=" $ BoolStr(Level.LoadedLevel != none) $ ",vis=" $ BoolStr(Level.bIsVisible)
 			$ ",want=" $ BoolStr(Level.bShouldBeVisible) $ ",pending=" $ BoolStr(Level.bHasLoadRequestPending));
-		`log("room" @ i @ "facility=" $ Facility @ "map=" $ Wanted @ Stream
+		`log("room" @ i @ "facility=" $ Facility $ (Room.UnderConstruction ? ",building" : "") @ "map=" $ Wanted @ Stream
 			@ (Loaded ~= Wanted ? "" : "STALE loaded=" $ Loaded),, 'CoopHarness');
 	}
 }
@@ -737,8 +769,9 @@ function LogTime()
 	local XComGameStateHistory History;
 	local XComGameState_GameTime TimeState;
 	local XComGameState_HeadquartersXCom XComHQ;
-	local XComGameState_HeadquartersProjectResearch Project;
-	local string Line;
+	local XComGameState_HeadquartersProject Project;
+	local XComGameState_BaseObject Focus;
+	local string Line, FocusName;
 	local int i;
 
 	History = `XCOMHISTORY;
@@ -750,16 +783,21 @@ function LogTime()
 		Line @= "rules=" $ DateStr(`STRATEGYRULES.GameTime) @ "geoscape=" $ DateStr(`GAME.GetGeoscape().m_kDateTime)
 			@ "scale=" $ `GAME.GetGeoscape().m_fTimeScale;
 	}
+	// every HQ project (research, facility construction, ...) with its focus and completion date
 	for (i = 0; XComHQ != none && i < XComHQ.Projects.Length; i++)
 	{
-		Project = XComGameState_HeadquartersProjectResearch(History.GetGameStateForObjectID(XComHQ.Projects[i].ObjectID));
+		Project = XComGameState_HeadquartersProject(History.GetGameStateForObjectID(XComHQ.Projects[i].ObjectID));
 		if (Project != none)
 		{
-			Line @= "research#" $ Project.ObjectID $ "=" $ XComGameState_Tech(History.GetGameStateForObjectID(Project.ProjectFocus.ObjectID)).GetMyTemplateName()
+			Focus = History.GetGameStateForObjectID(Project.ProjectFocus.ObjectID);
+			FocusName = XComGameState_Tech(Focus) != none ? string(XComGameState_Tech(Focus).GetMyTemplateName())
+				: (XComGameState_FacilityXCom(Focus) != none ? string(XComGameState_FacilityXCom(Focus).GetMyTemplateName()) : string(Focus.Class.Name));
+			Line @= Mid(string(Project.Class.Name), Len("XComGameState_HeadquartersProject")) $ "#" $ Project.ObjectID $ "=" $ FocusName
 				$ ",done@" $ DateStr(Project.CompletionDateTime) $ ",points=" $ Project.ProjectPointsRemaining;
 		}
 	}
-	`log(Line @ "techs=" $ (XComHQ != none ? XComHQ.TechsResearched.Length : -1),, 'CoopHarness');
+	`log(Line @ "projects=" $ (XComHQ != none ? XComHQ.Projects.Length : -1) @ "techs=" $ (XComHQ != none ? XComHQ.TechsResearched.Length : -1)
+		@ "facilities=" $ (XComHQ != none ? XComHQ.Facilities.Length : -1),, 'CoopHarness');
 }
 
 function StartResearch(name TechName)
@@ -778,6 +816,28 @@ function StartResearch(name TechName)
 		}
 	}
 	`log("research: no tech" @ TechName,, 'CoopHarness');
+}
+
+// Closes popups (alerts, reports, mission screens) down to the Geoscape or the Avenger base
+// screens, as a player clicking them away. An open UIAlert also stops HQ projects from completing.
+function Dismiss()
+{
+	local UIScreen Top;
+	local string Closed;
+	local int i;
+
+	for (i = 0; i < 6; i++)
+	{
+		Top = `SCREENSTACK.GetCurrentScreen();
+		if (Top == none || UIStrategyMap(Top) != none || UIFacilityGrid(Top) != none || UIAvengerHUD(Top) != none
+			|| UIEventNotices(Top) != none)
+		{
+			break;
+		}
+		Closed @= string(Top.Class.Name);
+		Top.CloseScreen();
+	}
+	`log("dismiss closed=" $ (Closed == "" ? "none" : Closed),, 'CoopHarness');
 }
 
 // The screen stack, top first, with edit screens and the wait dialog marked.
@@ -887,6 +947,28 @@ function BuildRoom(string Args)
 	{
 		FacilityTemplate.OnFacilityBuiltFn(Facility.GetReference());
 	}
+}
+
+// "index FacilityTemplate": a real construction project with build time and cost, what
+// UIChooseFacility does on confirm (unlike @buildroom, which places the facility at once).
+function Construct(string Args)
+{
+	local array<string> Parts;
+	local XComGameState_HeadquartersXCom XComHQ;
+	local XComGameState_HeadquartersRoom Room;
+	local X2FacilityTemplate FacilityTemplate;
+
+	Parts = SplitString(Args, " ", true);
+	FacilityTemplate = X2FacilityTemplate(class'X2StrategyElementTemplateManager'.static.GetStrategyElementTemplateManager().FindStrategyElementTemplate(name(Parts[1])));
+	XComHQ = XComGameState_HeadquartersXCom(`XCOMHISTORY.GetSingleGameStateObjectForClass(class'XComGameState_HeadquartersXCom'));
+	Room = XComHQ.GetRoom(int(Parts[0]));
+	if (FacilityTemplate == none || Room == none || Room.HasFacility() || Room.UnderConstruction)
+	{
+		`log("construct" @ Args @ "not possible",, 'CoopHarness');
+		return;
+	}
+	XComHQ.AddFacilityProject(Room.GetReference(), FacilityTemplate);
+	`log("construct" @ Args @ "started",, 'CoopHarness');
 }
 
 // "first last": the class of every ObjectID in the range, to compare which IDs each side allocated.

@@ -38,9 +38,13 @@ over Steam networking.
   frames sent one by one in bursts). The batch is a frame of its own on the sender
   ("Coop batch"): sending a state that is not in the history cut the sender's own
   previous-version links.
+  One merge state in flight: the receiver acknowledges each one ("CoopMergeAck"); a second
+  batch sent 0.23 s after the first was lost. A merge without an ack is sent again after 5 s.
 - **History alignment:** before each merge the receiver adds empty frames so the merge
   lands in the same frame number as the sender's batch; without it the host crashed in 5 of
   11 runs of the new-units test (the Avenger's map icon looked up an older version).
+- **Projects across players:** research and facility construction started by one player
+  complete on the other's Geoscape; the result and the room swap reach the starter.
 - **Host saves after merges load back** the same campaign (fingerprint and crew equal,
   Geoscape time runs, saving again works).
 - **Only the host saves:** on the client autosaves, quicksaves and the pause menu's Save are
@@ -52,6 +56,8 @@ over Steam networking.
 - The player without the baton still runs some local UI frames (alerts seen, entered
   facility...). They are not sent and get overwritten by the holder's merges.
 - The Geoscape clock: a player who stays on the Geoscape keeps the baton until leaving it.
+- Popups (research done, facility built, new missions) appear only for the player on the
+  Geoscape; the partner sees the result but no popup.
 - The edit screen list is a first guess (staff slots inside facilities, DLC/mod screens).
 - One unexplained crash of the client (engine package loading, tbbmalloc) while it was
   entering facilities by hand; not reproduced.
@@ -88,7 +94,7 @@ Build scripts: [X2ModBuildCommon](https://github.com/X2CommunityCore/X2ModBuildC
 - The mod contains a test bot (`CoopHarness`): `tools/run_pair_test.ps1` writes a list of
   steps per instance (console commands and `@harness` commands such as `@connect`,
   `@baton`, `@crewinfo`, `@rooms`, `@open research`, `@ask`, `@save`, `@load N`,
-  `@verchain`) and collects both logs.
+  `@verchain`, `@construct`, `@dismiss`, `@waitgrantreq`) and collects both logs.
   It does nothing when its step list is empty (normal play).
 - `tools/test_suite.ps1` runs the scenarios and asserts on both logs (expected lines, no
   DESYNC/crash/duplicate IDs, equal final fingerprints). Do not touch the game windows

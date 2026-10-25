@@ -12,6 +12,8 @@ $logs = @{ A = "$root\test-install\XCom2-WarOfTheChosen\XComGame\Logs\Launch.log
 # A hosts a cheat-start campaign and holds the baton; B joins and enters the Avenger as mirror.
 $hostA = @("2|@newcampaign", "20|@histinfo", "1|MPCreateServer 7778", "1|@waitconn", "1|@baton", "2|MPSendHistory")
 $joinB = @("45|@connect 127.0.0.1 7778", "1|@waitconn", "1|@waithist 100", "1|@mirror")
+# the holder on the Geoscape: popups away, time on, 12 times (about 6-7 weeks of game time)
+$geoLoop = @(); for ($i = 0; $i -lt 12; $i++) { $geoLoop += @("1|@dismiss", "1|@geoscape", "2|@scan", "10|@time", "1|@screens") }
 
 $scenarios = [ordered]@{
   # resources and new units both ways; the grant goes out right after a frame (command/merge race).
@@ -39,8 +41,10 @@ $scenarios = [ordered]@{
   }
   # edit screens: requests wait while the holder has an edit screen (Geoscape) open
   "edit-gate" = @{
-    A = $hostA + @("25|@screens", "3|@hud", "12|@open research", "16|@screens", "10|@close", "5|@histinfo")
-    B = $joinB + @("15|@open research", "15|@screens", "15|@close", "15|@histinfo")
+    # waits on conditions, not times: a loading movie and GPU stalls once delayed B's 15 s step to 46 s
+    # A holds the Geoscape (an edit screen) until B's request is deferred, then B holds research while A asks
+    A = $hostA + @("20|@geoscape", "5|@screens", "1|@waitgrantreq", "3|@hud", "1|@waitnobaton", "3|@open research", "5|@screens", "1|@waitbaton", "3|@close", "5|@histinfo")
+    B = $joinB + @("15|@open research", "1|@waitbaton", "1|@waitgrantreq", "2|@screens", "3|@close", "20|@histinfo")
     ExpectA = @("baton request deferred: edit screen open", "last edit screen closed, handing over the requested baton", "edit screen UIChooseResearch opened without baton")
     ExpectB = @("edit screen UIChooseResearch opened without baton", "baton=mine", "baton request deferred: edit screen open", "last edit screen closed, handing over the requested baton")
   }
@@ -51,6 +55,16 @@ $scenarios = [ordered]@{
     B = $joinB + @("45|@time", "1|@ask", "3|@waitbaton", "1|@geoscape", "3|@scan", "5|@pause", "1|@time", "2|@hud", "15|@time", "1|@histinfo")
     ExpectA = @("research started AlienBiotech", "clock set to t2035-3-")
     ExpectB = @("clock set to t2035-3-", "baton=mine")
+  }
+  # real projects (research + facility construction) started by the host finish while the
+  # client holds the baton and runs the Geoscape; the client clicks popups away (@dismiss:
+  # HQ projects do not complete while a UIAlert is open or the Geoscape screen is closed)
+  "projects" = @{
+    A = $hostA + @("15|@close", "3|@hud", "3|@clearroom 3", "5|@construct 3 Laboratory", "3|@hud", "2|@research AlienBiotech", "2|@time", "1|@grant", "280|@time", "1|@rooms", "1|@histinfo")
+    B = $joinB + @("1|@waitbaton", "2|@time", "1|@geoscape") + $geoLoop + @("1|@pause", "1|@dismiss", "2|@hud", "5|@rooms", "1|@time", "20|@histinfo")
+    ExpectA = @("construct 3 Laboratory started", "research started AlienBiotech", "room 3 swap AVG_ER_BuildState_A -> AVG_Laboratory_A", "projects=0 techs=21 facilities=19")
+    ExpectB = @("baton=mine", "room 3 swap AVG_ER_A -> AVG_ER_BuildState_A", "projects=0 techs=21 facilities=19")
+    Timeout = 600
   }
   # bursts of frames in one tick both ways (the network layer lost frames sent one by one)
   "burst" = @{
@@ -77,9 +91,10 @@ $scenarios = [ordered]@{
   }
   # HUD panel button, holder's replies, Cancel in the wait dialog
   "panel-replies" = @{
-    # A keeps its edit screen until well after B's Cancel: with 30 s the handover once came
-    # 0.4 s before B's Cancel (the two instances' clocks differ by the launch offset)
-    A = $hostA + @("20|@close", "40|@hud", "15|@histinfo")
+    # A keeps the Geoscape (an edit screen) from B's first request until well after B's Cancel
+    # and second ask; fixed times failed twice (B's first step came 40 s late after its
+    # loading movie, or A's handover came 0.4 s before B's Cancel)
+    A = $hostA + @("20|@geoscape", "1|@waitgrantreq", "35|@hud", "15|@histinfo")
     B = $joinB + @("15|@open research", "3|@cancelwait", "3|@ask", "15|@panel", "30|@nobaton", "1|@ask", "3|@panel", "5|@histinfo")
     ExpectA = @("baton request deferred: edit screen open", "baton request ignored: not mine")
     ExpectB = @("waiting for baton cancelled, closing UIChooseResearch", "baton request: already sent", "baton request queued by partner", "baton=mine", "baton request answered: partner does not hold it")
@@ -92,7 +107,7 @@ $results = @()
 foreach ($name in $scenarios.Keys) {
   if ($Only.Count -gt 0 -and $Only -notcontains $name) { continue }
   $s = $scenarios[$name]
-  & "$PSScriptRoot\run_pair_test.ps1" -Name $name -StepsA $s.A -StepsB $s.B -Timeout 300 | Out-Null
+  & "$PSScriptRoot\run_pair_test.ps1" -Name $name -StepsA $s.A -StepsB $s.B -Timeout $(if ($s.Timeout) { $s.Timeout } else { 300 }) | Out-Null
   $fail = @()
   foreach ($t in "A", "B") {
     if (-not (Test-Path $logs[$t])) { $fail += "$t no log"; continue }

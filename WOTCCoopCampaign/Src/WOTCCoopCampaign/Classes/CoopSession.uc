@@ -2,9 +2,9 @@
 //  FILE:    CoopSession.uc
 //  PURPOSE: Co-op state shared by both players for the whole game session.
 //           Strategy sync, first version: the player holding the baton is the authority;
-//           every frame it adds to the history is sent to the partner as a merge game
-//           state, followed by a "CoopFrame" fingerprint (resources, counts, last
-//           ObjectIDs) so the receiver can detect divergence. The baton moves on request
+//           the frames it adds to the history are sent to the partner in batches as merge
+//           game states, each announced by "CoopAlign" with a fingerprint (resources, counts,
+//           last ObjectIDs) so the receiver can detect divergence. The baton moves on request
 //           (see BatonEpoch).
 //           A plain Object kept alive by the network manager's and history's delegate
 //           arrays (delegates bound to Actors would leak the World across map loads).
@@ -40,6 +40,15 @@ const BatchDelaySeconds = 0.2;
 
 var config int AlignTarget;          // frame the next merge should land in (AlignHistory)
 
+// One merge state in flight at a time: the receiver answers each one with "CoopMergeAck".
+// Two batches sent 0.23 s apart arrived as one merge callback (test "projects" in the suite:
+// two "CoopAlign" handled, one merge received; the first batch's object was lost). Frames
+// made meanwhile wait in the next batch; a merge not acknowledged in time is sent again.
+var config bool bMergeInFlight;
+var config float MergeSentTime;
+var config array<int> InFlightObjects;
+const MergeAckTimeoutSeconds = 5.0;
+
 var config bool bGrantRequested;     // partner asked while an edit screen was open here (CoopEditGate)
 var config bool bRequestSent;        // we asked and have not received the baton yet
 var config bool bRequestQueued;      // the holder answered "CoopBatonDeferred": it hands over after its edit screen
@@ -47,9 +56,10 @@ var config float RequestTime;
 const RequestTimeoutSeconds = 10.0;  // no answer at all: let the player ask again
 var config name WaitingScreenClass;  // edit screen waiting for the baton behind the wait dialog
 
-// The "CoopFrame" command is handled before the merge state sent ahead of it, so the
-// remote fingerprints queue here and are compared, in order, as the merge states apply.
-var array<string> PendingRemoteFps;
+// The sender's fingerprint for the next merge, carried by "CoopAlign" (handled before the
+// merge sent after it) and compared when that merge has been applied. Not a queue: a lost
+// merge must not shift the comparison of every later one.
+var string ExpectedRemoteFp;
 
 static function Init()
 {
@@ -267,7 +277,7 @@ static function FlushBatch()
 	local XComGameStateHistory History;
 	local XComGameState Batch;
 	local XComGameState_BaseObject StateObject;
-	local array<byte> Params, AlignParams;
+	local array<byte> AlignParams;
 	local int ObjectID, Frames;
 
 	default.bFlushScheduled = false;
@@ -283,9 +293,32 @@ static function FlushBatch()
 		GrantBaton(); // flushes the batch itself before granting
 		return;
 	}
-	if (default.BatchObjects.Length == 0 || !IsConnected())
+	if (!IsConnected())
 	{
 		default.BatchObjects.Length = 0;
+		default.BatchFrames = 0;
+		default.bMergeInFlight = false;
+		return;
+	}
+	if (default.bMergeInFlight)
+	{
+		if (Now() - default.MergeSentTime < MergeAckTimeoutSeconds)
+		{
+			RescheduleFlush(); // keep collecting; poll for the ack (or the timeout)
+			return;
+		}
+		`log("merge not acknowledged after" @ int(MergeAckTimeoutSeconds) @ "s, sending its objects again",, 'CoopCampaign');
+		foreach default.InFlightObjects(ObjectID)
+		{
+			if (default.BatchObjects.Find(ObjectID) == INDEX_NONE)
+			{
+				default.BatchObjects.AddItem(ObjectID);
+			}
+		}
+		default.bMergeInFlight = false;
+	}
+	if (default.BatchObjects.Length == 0)
+	{
 		default.BatchFrames = 0;
 		return;
 	}
@@ -308,6 +341,7 @@ static function FlushBatch()
 		}
 	}
 	Frames = default.BatchFrames;
+	default.InFlightObjects = default.BatchObjects;
 	default.BatchObjects.Length = 0;
 	default.BatchFrames = 0;
 	if (Batch.GetNumGameStateObjects() == 0)
@@ -323,12 +357,14 @@ static function FlushBatch()
 	`XCOMGAME.GameRuleset.SubmitGameState(Batch);
 	default.bApplyingRemote = false;
 	// the partner pads its history first, so the merge lands in the batch's frame number,
-	// after every frame its versions can name (AlignHistory)
+	// after every frame its versions can name (AlignHistory); it checks our fingerprint after the merge
 	class'XComGameStateNetworkManager'.static.AddCommandParam_Int(History.GetCurrentHistoryIndex(), AlignParams);
+	class'XComGameStateNetworkManager'.static.AddCommandParam_String(Fingerprint(), AlignParams);
 	`XCOMNETMANAGER.SendRemoteCommand("CoopAlign", AlignParams);
 	`XCOMNETMANAGER.SendMergeGameState(History.GetGameStateFromHistory(-1));
-	class'XComGameStateNetworkManager'.static.AddCommandParam_String(Fingerprint(), Params);
-	`XCOMNETMANAGER.SendRemoteCommand("CoopFrame", Params);
+	default.bMergeInFlight = true;
+	default.MergeSentTime = Now();
+	RescheduleFlush(); // polls for the ack, then sends what collected meanwhile
 	`log("sent batch of" @ Frames @ "frames," @ Batch.GetNumGameStateObjects() @ "objects, fp=" $ Fingerprint(),, 'CoopCampaign');
 }
 
@@ -369,7 +405,10 @@ static function AlignHistory(int Target)
 
 function OnReceiveMergeGameState(XComGameState InGameState)
 {
-	local string RemoteFp, LocalFp;
+	local string LocalFp;
+	local array<byte> Params;
+
+	`XCOMNETMANAGER.SendRemoteCommand("CoopMergeAck", Params); // the sender may send its next batch
 
 	if (`XCOMHISTORY.GetCurrentHistoryIndex() != default.AlignTarget)
 	{
@@ -381,12 +420,10 @@ function OnReceiveMergeGameState(XComGameState InGameState)
 	LocalFp = Fingerprint();
 	`log("received merge state, frames now=" $ `XCOMHISTORY.GetNumGameStates()
 		@ "objects=" $ InGameState.GetNumGameStateObjects() @ "fp=" $ LocalFp,, 'CoopCampaign');
-	if (PendingRemoteFps.Length > 0)
+	if (ExpectedRemoteFp != "")
 	{
-		// one merge state per sent frame, applied one per tick, in order (test "burst")
-		RemoteFp = PendingRemoteFps[0];
-		PendingRemoteFps.Remove(0, 1);
-		`log((RemoteFp == LocalFp ? "in sync" : "DESYNC") @ "remote=" $ RemoteFp @ "local=" $ LocalFp,, 'CoopCampaign');
+		`log((ExpectedRemoteFp == LocalFp ? "in sync" : "DESYNC") @ "remote=" $ ExpectedRemoteFp @ "local=" $ LocalFp,, 'CoopCampaign');
+		ExpectedRemoteFp = "";
 	}
 	TryAcceptGrant();
 }
@@ -400,12 +437,13 @@ function OnRemoteCommand(string Command, array<byte> RawParams)
 
 	if (Command == "CoopAlign")
 	{
-		AlignHistory(class'XComGameStateNetworkManager'.static.GetCommandParam_Int(RawParams));
-	}
-	else if (Command == "CoopFrame")
-	{
 		default.LastRemoteFrameTime = Now();
-		PendingRemoteFps.AddItem(class'XComGameStateNetworkManager'.static.GetCommandParam_String(RawParams));
+		AlignHistory(class'XComGameStateNetworkManager'.static.GetCommandParam_Int(RawParams));
+		ExpectedRemoteFp = class'XComGameStateNetworkManager'.static.GetCommandParam_String(RawParams);
+	}
+	else if (Command == "CoopMergeAck")
+	{
+		default.bMergeInFlight = false;
 	}
 	else if (Command == "CoopBatonRequest")
 	{
