@@ -35,10 +35,14 @@ over Steam networking.
 - **Geoscape clock:** the holder's time travels with its frames; the partner's clock
   follows and continues forward after a handoff.
 - **Batching:** frames made within 0.2 s go out as one merge state (the network layer lost
-  frames sent one by one in bursts).
+  frames sent one by one in bursts). The batch is a frame of its own on the sender
+  ("Coop batch"): sending a state that is not in the history cut the sender's own
+  previous-version links.
 - **History alignment:** before each merge the receiver adds empty frames so the merge
-  lands right after the sender's current frame; without it the host crashed in 5 of 11
-  runs of the new-units test (the Avenger's map icon looked up an older version).
+  lands in the same frame number as the sender's batch; without it the host crashed in 5 of
+  11 runs of the new-units test (the Avenger's map icon looked up an older version).
+- **Host saves after merges load back** the same campaign (fingerprint and crew equal,
+  Geoscape time runs, saving again works).
 - **Only the host saves:** on the client autosaves, quicksaves and the pause menu's Save are
   disabled (`CoopAutosaveMgr`, `CoopSaveGate`); a client that saved while sending crashed.
 
@@ -52,8 +56,9 @@ over Steam networking.
 - One unexplained crash of the client (engine package loading, tbbmalloc) while it was
   entering facilities by hand; not reproduced.
 - Merged object versions keep the sender's "previous version" frame number; the receiver
-  pads its history so they stay valid (`CoopSession.AlignHistory`). Whether a host save
-  made after receiving merges loads back the same campaign is not tested yet.
+  pads its history so they stay valid (`CoopSession.AlignHistory`). On the receiver the
+  previous-version chain of a merged object ends at the merged version (the lookup returns
+  none, no crash). Whether some game code needs that older version is unknown.
 - Only direct IP tested (the host address is passed as one decimal integer: the engine's
   IpNetDriverSteamworks does not parse a dotted host).
 
@@ -82,7 +87,8 @@ Build scripts: [X2ModBuildCommon](https://github.com/X2CommunityCore/X2ModBuildC
   `tools/close_remote_handle.py`.
 - The mod contains a test bot (`CoopHarness`): `tools/run_pair_test.ps1` writes a list of
   steps per instance (console commands and `@harness` commands such as `@connect`,
-  `@baton`, `@crewinfo`, `@rooms`, `@open research`, `@ask`) and collects both logs.
+  `@baton`, `@crewinfo`, `@rooms`, `@open research`, `@ask`, `@save`, `@load N`,
+  `@verchain`) and collects both logs.
   It does nothing when its step list is empty (normal play).
 - `tools/test_suite.ps1` runs the scenarios and asserts on both logs (expected lines, no
   DESYNC/crash/duplicate IDs, equal final fingerprints). Do not touch the game windows

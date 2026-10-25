@@ -28,6 +28,9 @@ var float WaitLeft;
 var float NetWatchLeft;
 var string LastNetWatch;
 
+// @save: the slot being written
+var int SaveSlot;
+
 static function CoopHarness EnsureSpawned(Actor Spawner)
 {
 	local CoopHarness Harness;
@@ -268,6 +271,32 @@ function RunHarnessCommand(string Cmd)
 	else if (Left(Cmd, 9) ~= "walkback ")
 	{
 		WalkBack(int(Mid(Cmd, 9)));
+	}
+	else if (Cmd ~= "save")
+	{
+		// a new slot, as the save screen does for an empty entry
+		SaveSlot = `AUTOSAVEMGR.GetNextSaveID();
+		`log("save slot=" $ SaveSlot @ "frames=" $ `XCOMHISTORY.GetNumGameStates() @ "fp=" $ class'CoopSession'.static.Fingerprint(),, 'CoopHarness');
+		`ONLINEEVENTMGR.SaveGame(SaveSlot, false, false, SaveDone);
+	}
+	else if (Left(Cmd, 5) ~= "load ")
+	{
+		LoadSlot(int(Mid(Cmd, 5)));
+	}
+	else if (Cmd ~= "verchain")
+	{
+		VerChain();
+	}
+	else if (Left(Cmd, 11) ~= "localburst ")
+	{
+		// frames that are not batched or sent (as if applying remote frames)
+		class'CoopSession'.default.bApplyingRemote = true;
+		Burst(int(Mid(Cmd, 11)));
+		class'CoopSession'.default.bApplyingRemote = false;
+	}
+	else if (Left(Cmd, 8) ~= "sendvar ")
+	{
+		SendVariant(int(Mid(Cmd, 8)));
 	}
 	else if (Cmd ~= "pausemenu")
 	{
@@ -541,6 +570,140 @@ function WalkBack(int Frames)
 		}
 	}
 	`log("walkback frames=" $ Frames @ "found=" $ Found,, 'CoopHarness');
+}
+
+// Ways of sending the HQ as a merge state, to find the step that cuts the sender's own
+// version chain (CoopSession.FlushBatch did it). 1: pending state, send, discard (FlushBatch);
+// 2: pending state, discard, no send; 3: pending state, send, never discarded;
+// 4: a submitted frame, then send that frame.
+function SendVariant(int Variant)
+{
+	local XComGameStateHistory History;
+	local XComGameState Batch;
+	local XComGameState_HeadquartersXCom XComHQ;
+
+	History = `XCOMHISTORY;
+	XComHQ = XComGameState_HeadquartersXCom(History.GetSingleGameStateObjectForClass(class'XComGameState_HeadquartersXCom'));
+	Batch = class'XComGameStateContext_ChangeContainer'.static.CreateChangeState("Coop test: send variant" @ Variant);
+	Batch.ModifyStateObject(class'XComGameState_HeadquartersXCom', XComHQ.ObjectID);
+	if (Variant == 4)
+	{
+		class'CoopSession'.default.bApplyingRemote = true;
+		`XCOMGAME.GameRuleset.SubmitGameState(Batch);
+		class'CoopSession'.default.bApplyingRemote = false;
+		`XCOMNETMANAGER.SendMergeGameState(History.GetGameStateFromHistory(-1));
+	}
+	else
+	{
+		if (Variant != 2)
+		{
+			`XCOMNETMANAGER.SendMergeGameState(Batch);
+		}
+		if (Variant != 3)
+		{
+			History.CleanupPendingGameState(Batch);
+		}
+	}
+	`log("sendvar" @ Variant @ "done frame=" $ History.GetCurrentHistoryIndex(),, 'CoopHarness');
+}
+
+function SaveDone(bool bWasSuccessful)
+{
+	`log("save done slot=" $ SaveSlot @ "ok=" $ BoolStr(bWasSuccessful),, 'CoopHarness');
+}
+
+// Loads a save by its ID (the number "@save" logged), the way UILoadGame does.
+function LoadSlot(int SaveID)
+{
+	local array<OnlineSaveGame> Saves;
+	local int i;
+
+	`ONLINEEVENTMGR.GetSaveGames(Saves);
+	for (i = 0; i < Saves.Length; i++)
+	{
+		if (Saves[i].SaveGames.Length > 0 && Saves[i].SaveGames[0].SaveGameHeader.SaveID == SaveID)
+		{
+			`log("load slot=" $ SaveID @ "file=" $ Saves[i].Filename @ "time=" $ Saves[i].SaveGames[0].SaveGameHeader.Time,, 'CoopHarness');
+			`ONLINEEVENTMGR.LoadGame(SaveID, LoadDone);
+			return;
+		}
+	}
+	`log("load slot=" $ SaveID @ "not found among" @ Saves.Length @ "saves",, 'CoopHarness');
+}
+
+function LoadDone(bool bWasSuccessful)
+{
+	`log("load read ok=" $ BoolStr(bWasSuccessful),, 'CoopHarness');
+}
+
+// Follows the previous-version links (PreviousHistoryFrameIndex) of the HQ and every crew
+// member from the current version back, and counts the frames that hold a version of the
+// object. On a purely local history both numbers match. "short": the chain ends before the
+// first version (a link names a frame without a version of the object); "bad": a link that
+// does not go back in time (a version naming its own or a later frame).
+function VerChain()
+{
+	local XComGameStateHistory History;
+	local XComGameState_HeadquartersXCom XComHQ;
+	local XComGameState_BaseObject Obj, Prev;
+	local XComGameState Frame;
+	local array<int> IDs;
+	local StateObjectReference Ref;
+	local int i, f, Chain, Frames, LastIndex, FirstIndex, Expected, Short, Bad, Versions, Total;
+
+	History = `XCOMHISTORY;
+	XComHQ = XComGameState_HeadquartersXCom(History.GetSingleGameStateObjectForClass(class'XComGameState_HeadquartersXCom'));
+	IDs.AddItem(XComHQ.ObjectID);
+	foreach XComHQ.Crew(Ref)
+	{
+		IDs.AddItem(Ref.ObjectID);
+	}
+	for (i = 0; i < IDs.Length; i++)
+	{
+		Obj = History.GetGameStateForObjectID(IDs[i]);
+		Chain = 0;
+		LastIndex = Obj.GetParentGameState().HistoryIndex;
+		while (Obj != none && Chain < 5000)
+		{
+			Chain++;
+			FirstIndex = Obj.GetParentGameState().HistoryIndex;
+			Prev = Obj.GetPreviousVersion();
+			if (Prev != none && Prev.GetParentGameState().HistoryIndex >= LastIndex)
+			{
+				Bad++;
+				`log("verchain id=" $ IDs[i] @ "BAD link" @ LastIndex @ "->" @ Prev.GetParentGameState().HistoryIndex,, 'CoopHarness');
+				break;
+			}
+			if (Prev != none)
+			{
+				LastIndex = Prev.GetParentGameState().HistoryIndex;
+			}
+			Obj = Prev;
+		}
+		Frames = 0;
+		Expected = -1;
+		for (f = 0; f < History.GetNumGameStates(); f++)
+		{
+			Frame = History.GetGameStateFromHistory(f, eReturnType_Reference);
+			if (Frame != none && Frame.GetGameStateForObjectID(IDs[i]) != none)
+			{
+				Frames++;
+				if (f < FirstIndex)
+				{
+					Expected = f; // the newest frame before the chain's end that holds a version
+				}
+			}
+		}
+		Versions += Chain;
+		Total += Frames;
+		if (Chain != Frames)
+		{
+			Short++;
+			`log("verchain id=" $ IDs[i] @ "chain=" $ Chain @ "frames=" $ Frames @ "chain ends at frame" @ FirstIndex @ "previous version in frame" @ Expected
+				@ "context=" $ History.GetGameStateFromHistory(FirstIndex, eReturnType_Reference).GetContext().SummaryString(),, 'CoopHarness');
+		}
+	}
+	`log("verchain objects=" $ IDs.Length @ "versions=" $ Versions @ "framesWithVersion=" $ Total @ "short=" $ Short @ "bad=" $ Bad,, 'CoopHarness');
 }
 
 // Count frames in one tick, each +1 supply, like the bursts the game makes (e.g. three

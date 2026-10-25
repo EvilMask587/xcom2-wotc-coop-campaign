@@ -315,11 +315,18 @@ static function FlushBatch()
 		History.CleanupPendingGameState(Batch);
 		return;
 	}
-	// the partner pads its history first, so the merge lands right after our current frame (AlignHistory)
-	class'XComGameStateNetworkManager'.static.AddCommandParam_Int(History.GetCurrentHistoryIndex() + 1, AlignParams);
+	// The batch is submitted here as a frame of its own and that frame is sent. Sending a
+	// pending (never submitted) state cut the previous-version link of the newest version of
+	// every object in it, here on the sender: GetPreviousVersion returned none from then on
+	// (test "sendvar"; a submitted frame sent the same way kept the chain).
+	default.bApplyingRemote = true; // not a frame to batch again (OnNewGameState)
+	`XCOMGAME.GameRuleset.SubmitGameState(Batch);
+	default.bApplyingRemote = false;
+	// the partner pads its history first, so the merge lands in the batch's frame number,
+	// after every frame its versions can name (AlignHistory)
+	class'XComGameStateNetworkManager'.static.AddCommandParam_Int(History.GetCurrentHistoryIndex(), AlignParams);
 	`XCOMNETMANAGER.SendRemoteCommand("CoopAlign", AlignParams);
-	`XCOMNETMANAGER.SendMergeGameState(Batch);
-	History.CleanupPendingGameState(Batch); // never submitted here: it only carries copies
+	`XCOMNETMANAGER.SendMergeGameState(History.GetGameStateFromHistory(-1));
 	class'XComGameStateNetworkManager'.static.AddCommandParam_String(Fingerprint(), Params);
 	`XCOMNETMANAGER.SendRemoteCommand("CoopFrame", Params);
 	`log("sent batch of" @ Frames @ "frames," @ Batch.GetNumGameStateObjects() @ "objects, fp=" $ Fingerprint(),, 'CoopCampaign');
@@ -332,7 +339,7 @@ static function FlushBatch()
 // slot), e.g. the Avenger's Geoscape map item, UIStrategyMapItem.UpdateFromGeoscapeEntity,
 // looking up the HQ as of its last update, and GetPreviousVersion (test "baton-objects":
 // the client's batch from its frame 231 reached a host whose last frame was 229).
-// Before each merge the sender sends its current frame index + 1; the receiver adds empty
+// Before each merge the sender sends the index of its batch frame (FlushBatch); the receiver adds empty
 // frames until that is its current frame, so the merge lands right after every frame the
 // sender's versions name: a named frame is then never past the end and always before the
 // version's own one. Landing in the sender's current frame itself made versions name their

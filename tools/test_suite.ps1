@@ -1,6 +1,6 @@
 # Two-instance test suite: runs each scenario with run_pair_test.ps1 and checks both logs.
 # Every scenario must: finish on both instances, end with equal fingerprints on A and B
-# (last "@histinfo"), log no DESYNC / crash / duplicate crew ID / stale room / harness
+# (last "@histinfo"), log no broken version link (@verchain bad=), no DESYNC / crash / duplicate crew ID / stale room / harness
 # timeout, and log every line in its Expect lists. Prints PASS/FAIL per scenario.
 # Usage: tools\test_suite.ps1 [-Only name1,name2]   (env as for run_pair_test.ps1)
 param([string[]]$Only = @())
@@ -18,10 +18,10 @@ $scenarios = [ordered]@{
   # The host crashed in 5 of 11 runs here before AlignHistory (Avenger map item walking back
   # through a merged HQ version); @walkback makes that lookup over the last 20 frames
   "baton-objects" = @{
-    A = $hostA + @("60|GiveScientist", "0.01|@grant", "25|@batonreq", "1|@waitbaton", "1|@walkback 20", "1|GiveEngineer", "1|GiveResource Supplies 77", "8|@crewinfo 4", "1|@histinfo")
-    B = $joinB + @("1|@waitbaton", "0.01|GiveEngineer", "0.01|GiveResource AlienAlloy 9", "40|@crewinfo 4", "1|@walkback 20", "1|@histinfo")
-    ExpectA = @("baton granted epoch=1", "baton grant received epoch=2", "in sync", "walkback frames=20")
-    ExpectB = @("baton grant received epoch=1", "baton=mine", "baton granted epoch=2", "in sync", "walkback frames=20")
+    A = $hostA + @("60|GiveScientist", "0.01|@grant", "25|@batonreq", "1|@waitbaton", "1|@walkback 20", "1|GiveEngineer", "1|GiveResource Supplies 77", "8|@crewinfo 4", "1|@verchain", "1|@histinfo")
+    B = $joinB + @("1|@waitbaton", "0.01|GiveEngineer", "0.01|GiveResource AlienAlloy 9", "40|@crewinfo 4", "1|@walkback 20", "1|@verchain", "1|@histinfo")
+    ExpectA = @("baton granted epoch=1", "baton grant received epoch=2", "in sync", "walkback frames=20", "verchain objects=")
+    ExpectB = @("baton grant received epoch=1", "baton=mine", "baton granted epoch=2", "in sync", "walkback frames=20", "verchain objects=")
   }
   # a facility is removed and built again; B swaps the room map both times
   "facility" = @{
@@ -87,7 +87,7 @@ $scenarios = [ordered]@{
 }
 
 # matched case-sensitively: the engine logs e.g. "MaxStaleCacheSize" at start
-$forbidden = 'DESYNC|Crash Detected|duplicateIDs=[1-9]|STALE loaded=|wait \w+ TIMEOUT|appError'
+$forbidden = 'verchain .*bad=[1-9]|DESYNC|Crash Detected|duplicateIDs=[1-9]|STALE loaded=|wait \w+ TIMEOUT|appError'
 $results = @()
 foreach ($name in $scenarios.Keys) {
   if ($Only.Count -gt 0 -and $Only -notcontains $name) { continue }
