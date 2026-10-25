@@ -45,6 +45,9 @@ over Steam networking.
   11 runs of the new-units test (the Avenger's map icon looked up an older version).
 - **Projects across players:** research and facility construction started by one player
   complete on the other's Geoscape; the result and the room swap reach the starter.
+- **Client drop and rejoin:** when the connection closes the host takes the baton back
+  (also from a client that died holding it) and drops what was in flight; a new client
+  process connects, receives the whole history again and continues with the baton handoff.
 - **Host saves after merges load back** the same campaign (fingerprint and crew equal,
   Geoscape time runs, saving again works).
 - **Only the host saves:** on the client autosaves, quicksaves and the pause menu's Save are
@@ -65,6 +68,9 @@ over Steam networking.
   pads its history so they stay valid (`CoopSession.AlignHistory`). On the receiver the
   previous-version chain of a merged object ends at the merged version (the lookup returns
   none, no crash). Whether some game code needs that older version is unknown.
+- Joining (also after a drop) is driven by the test bot: the host sends the history with
+  `MPSendHistory`; there is no join menu yet. A host that drops is not handled beyond a log
+  line on the client.
 - Only direct IP tested (the host address is passed as one decimal integer: the engine's
   IpNetDriverSteamworks does not parse a dotted host).
 
@@ -94,7 +100,8 @@ Build scripts: [X2ModBuildCommon](https://github.com/X2CommunityCore/X2ModBuildC
 - The mod contains a test bot (`CoopHarness`): `tools/run_pair_test.ps1` writes a list of
   steps per instance (console commands and `@harness` commands such as `@connect`,
   `@baton`, `@crewinfo`, `@rooms`, `@open research`, `@ask`, `@save`, `@load N`,
-  `@verchain`, `@construct`, `@dismiss`, `@waitgrantreq`) and collects both logs.
+  `@verchain`, `@construct`, `@dismiss`, `@waitgrantreq`, `@waitjoins N`) and collects both logs.
+  `tools/run_rejoin_test.ps1` kills instance B after its steps and starts it again.
   It does nothing when its step list is empty (normal play).
 - `tools/test_suite.ps1` runs the scenarios and asserts on both logs (expected lines, no
   DESYNC/crash/duplicate IDs, equal final fingerprints). Do not touch the game windows

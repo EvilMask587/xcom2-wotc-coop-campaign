@@ -29,6 +29,7 @@ function StartMatch()
 	PlayerController.ClientSetOnlineStatus();
 
 	class'CoopSession'.default.bEnterAsMirror = false;
+	class'CoopSession'.default.bMirrorClient = true; // this side plays the host's campaign
 	`log("entering Avenger as mirror, frames=" $ `XCOMHISTORY.GetNumGameStates(),, 'CoopCampaign');
 	m_kGameCore = Spawn(class'XGStrategy', self);
 	m_kGameCore.OnLoadedGame();

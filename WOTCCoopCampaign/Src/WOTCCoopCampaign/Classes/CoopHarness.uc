@@ -111,6 +111,14 @@ function PollWait()
 	{
 		bMet = class'CoopSession'.default.bHasBaton;
 	}
+	else if (WaitKind == 'Joins')
+	{
+		bMet = class'CoopHarnessNet'.default.JoinCount >= WaitArg;
+	}
+	else if (WaitKind == 'Closed')
+	{
+		bMet = class'CoopHarnessNet'.default.ClosedCount >= WaitArg;
+	}
 	else if (WaitKind == 'NoBaton')
 	{
 		bMet = !class'CoopSession'.default.bHasBaton;
@@ -197,6 +205,14 @@ function RunHarnessCommand(string Cmd)
 	else if (Cmd ~= "waitbaton")
 	{
 		StartWait('Baton', 0);
+	}
+	else if (Left(Cmd, 10) ~= "waitjoins ")
+	{
+		StartWait('Joins', int(Mid(Cmd, 10))); // N-th PlayerJoined (a rejoin is the 2nd)
+	}
+	else if (Left(Cmd, 11) ~= "waitclosed ")
+	{
+		StartWait('Closed', int(Mid(Cmd, 11)));
 	}
 	else if (Cmd ~= "waitnobaton")
 	{

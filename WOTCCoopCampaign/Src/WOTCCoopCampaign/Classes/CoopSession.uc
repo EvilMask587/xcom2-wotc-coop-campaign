@@ -16,6 +16,7 @@ var config bool bHasBaton;
 var config bool bApplyingRemote;
 var config int LocalFramesWithoutBaton;
 var config bool bEnterAsMirror; // read by CoopHeadquartersGame on the next Avenger load
+var config bool bMirrorClient;  // entered the campaign from the host's history (the client side)
 var config int LastHandledFrame; // history hooks are re-added every map; a frame is handled once
 
 // Baton handoff: the holder answers "CoopBatonRequest" by dropping the baton and sending
@@ -75,7 +76,37 @@ static function Init()
 	NetMgr = `XCOMNETMANAGER;
 	NetMgr.AddReceiveMergeGameStateDelegate(Session.OnReceiveMergeGameState);
 	NetMgr.AddReceiveRemoteCommandDelegate(Session.OnRemoteCommand);
+	NetMgr.AddNotifyConnectionClosedDelegate(Session.OnConnectionClosed);
 	`log("session ready",, 'CoopCampaign');
+}
+
+// The partner is gone (quit, crash, lost connection; seen about 3 s after its process was
+// killed, test "rejoin-explore"). Everything in flight between the two is dropped. The host
+// takes the baton back: a client that died holding it left nobody able to change the
+// campaign, and the host's own changes were not sent after the client came back
+// (supplies 4005 on the host, 4000 on the rejoined client). The client rejoins by
+// receiving the whole history again.
+function OnConnectionClosed(int ConnectionIdx)
+{
+	default.bGrantPending = false;
+	default.bGrantRequested = false;
+	default.bGrantAfterFlush = false;
+	default.bMergeInFlight = false;
+	default.InFlightObjects.Length = 0;
+	default.BatchObjects.Length = 0;
+	default.BatchFrames = 0;
+	ExpectedRemoteFp = "";
+	if (default.bMirrorClient)
+	{
+		`log("connection closed: the host left; this copy of the campaign is no longer shared",, 'CoopCampaign');
+		SetBaton(false);
+		return;
+	}
+	`log("connection closed: the partner left; the host takes the baton back (had it: " $ (default.bHasBaton ? "yes" : "no") $ ")",, 'CoopCampaign');
+	if (!default.bHasBaton)
+	{
+		SetBaton(true);
+	}
 }
 
 // ResetHistory (new campaign, loading a save) drops the history's delegates, so this is

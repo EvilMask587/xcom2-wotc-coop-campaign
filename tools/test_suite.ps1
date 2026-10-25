@@ -1,4 +1,5 @@
-# Two-instance test suite: runs each scenario with run_pair_test.ps1 and checks both logs.
+# Two-instance test suite: runs each scenario with run_pair_test.ps1 (run_rejoin_test.ps1
+# when it has B2 steps: B drops and a new B runs B2) and checks both logs.
 # Every scenario must: finish on both instances, end with equal fingerprints on A and B
 # (last "@histinfo"), log no broken version link (@verchain bad=), no DESYNC / crash / duplicate crew ID / stale room / harness
 # timeout, and log every line in its Expect lists. Prints PASS/FAIL per scenario.
@@ -66,6 +67,17 @@ $scenarios = [ordered]@{
     ExpectB = @("baton=mine", "room 3 swap AVG_ER_A -> AVG_ER_BuildState_A", "projects=0 techs=21 facilities=19")
     Timeout = 600
   }
+  # the client dies (process killed) while holding the baton, comes back and gets the history
+  # again; the host takes the baton back on the closed connection, its change reaches the
+  # rejoined client, and the baton goes to the rejoined client. B = before the drop, B2 = after
+  "rejoin" = @{
+    A = $hostA + @("40|GiveScientist", "1|@grant", "20|@histinfo", "1|@waitclosed 1", "2|@panel", "1|@waitjoins 2", "2|MPSendHistory", "45|GiveResource Supplies 5", "5|@grant", "20|@crewinfo 3", "1|@verchain", "1|@histinfo")
+    B = $joinB + @("1|@waitbaton", "1|GiveEngineer", "5|@histinfo")
+    B2 = @("15|@connect 127.0.0.1 7778", "1|@waitconn", "1|@waithist 100", "1|@mirror", "1|@waitbaton", "1|GiveResource AlienAlloy 3", "15|@crewinfo 3", "1|@verchain", "1|@histinfo")
+    ExpectA = @("connection closed: the partner left; the host takes the baton back (had it: no)", "joins=2", "baton granted epoch=2", "in sync")
+    ExpectB = @("baton grant received epoch=2", "baton=mine", "in sync", "crew 26 id=")
+    Timeout = 500
+  }
   # bursts of frames in one tick both ways (the network layer lost frames sent one by one)
   "burst" = @{
     A = $hostA + @("15|@close", "3|@hud", "5|@grant", "40|@batonreq", "1|@waitbaton", "3|@burst 10", "3|@burst 50", "15|@histinfo")
@@ -101,14 +113,26 @@ $scenarios = [ordered]@{
   }
 }
 
+$b1Log = "$root\test-install-b\XCom2-WarOfTheChosen\XComGame\Logs\Launch-B1.log"
 # matched case-sensitively: the engine logs e.g. "MaxStaleCacheSize" at start
 $forbidden = 'verchain .*bad=[1-9]|DESYNC|Crash Detected|duplicateIDs=[1-9]|STALE loaded=|wait \w+ TIMEOUT|appError'
 $results = @()
 foreach ($name in $scenarios.Keys) {
   if ($Only.Count -gt 0 -and $Only -notcontains $name) { continue }
   $s = $scenarios[$name]
-  & "$PSScriptRoot\run_pair_test.ps1" -Name $name -StepsA $s.A -StepsB $s.B -Timeout $(if ($s.Timeout) { $s.Timeout } else { 300 }) | Out-Null
+  $timeout = if ($s.Timeout) { $s.Timeout } else { 300 }
+  if ($s.B2) {
+    # B drops after its steps and a new B process runs B2; B's first log is Launch-B1.log
+    & "$PSScriptRoot\run_rejoin_test.ps1" -Name $name -StepsA $s.A -StepsB1 $s.B -StepsB2 $s.B2 -Timeout $timeout | Out-Null
+  } else {
+    & "$PSScriptRoot\run_pair_test.ps1" -Name $name -StepsA $s.A -StepsB $s.B -Timeout $timeout | Out-Null
+  }
   $fail = @()
+  if ($s.B2) {
+    if (Test-Path $b1Log) {
+      foreach ($b in (Select-String -Path $b1Log -Pattern $forbidden -CaseSensitive | Select-Object -First 3)) { $fail += "B1 forbidden: $($b.Line.Trim())" }
+    } else { $fail += "B1 no log" }
+  }
   foreach ($t in "A", "B") {
     if (-not (Test-Path $logs[$t])) { $fail += "$t no log"; continue }
     $text = Get-Content $logs[$t] -Raw
@@ -133,6 +157,7 @@ foreach ($name in $scenarios.Keys) {
     $keep = "$root\suite-failures\$(Get-Date -Format 'yyyyMMdd-HHmmss')-$name"
     New-Item -ItemType Directory -Force $keep | Out-Null
     foreach ($t in "A", "B") { if (Test-Path $logs[$t]) { Copy-Item $logs[$t] "$keep\Launch-$t.log" } }
+    if ($s.B2 -and (Test-Path $b1Log)) { Copy-Item $b1Log "$keep\Launch-B1.log" }
     Write-Host "     logs kept in $keep"
   }
   $results += [pscustomobject]@{ Name = $name; Status = $status; Fp = $fp.A }

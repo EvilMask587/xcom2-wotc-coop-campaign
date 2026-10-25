@@ -8,6 +8,8 @@ class CoopHarnessNet extends Object config(CoopHarness);
 
 var config bool bInited;       // the instance is kept alive by the network manager's delegate arrays
 var config bool bPeerJoined;   // set by the PlayerJoined event; config only so the default may be written
+var config int JoinCount;      // PlayerJoined events so far (a rejoin is the second)
+var config int ClosedCount;    // ConnectionClosed events so far
 
 static function Init()
 {
@@ -38,7 +40,8 @@ static function SendCommand(string Command)
 
 function OnPlayerJoined(string RequestURL, string Address, const UniqueNetId UniqueId, bool bSupportsAuth)
 {
-	`log("event PlayerJoined addr=" $ Address,, 'CoopHarness');
+	default.JoinCount++;
+	`log("event PlayerJoined addr=" $ Address @ "joins=" $ default.JoinCount,, 'CoopHarness');
 	default.bPeerJoined = true;
 }
 
@@ -49,7 +52,8 @@ function OnAcceptedConnection(int ConnectionIdx)
 
 function OnConnectionClosed(int ConnectionIdx)
 {
-	`log("event ConnectionClosed idx=" $ ConnectionIdx,, 'CoopHarness');
+	default.ClosedCount++;
+	`log("event ConnectionClosed idx=" $ ConnectionIdx @ "closed=" $ default.ClosedCount,, 'CoopHarness');
 }
 
 function OnRemoteCommand(string Command, array<byte> RawParams)
